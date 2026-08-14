@@ -7,6 +7,7 @@
         android:label="NovaForge Engine"
         android:supportsRtl="true"
         android:theme="@style/Theme.NovaForge">
+        <activity android:name=".PlayActivity" android:screenOrientation="unspecified" />
         <activity android:name=".EditorActivity" android:screenOrientation="unspecified" />
         <activity
             android:name=".MainActivity"
