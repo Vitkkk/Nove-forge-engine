@@ -10,7 +10,9 @@ import org.luaj.vm2.LuaValue
 class EngineRuntime(
     val scene: SceneDocument,
     private val scriptLoader: (String) -> String?,
-    private val blocksLoader: (String) -> String? = { null }
+    private val blocksLoader: (String) -> String? = { null },
+    val baseWidth: Int = 1920,
+    val baseHeight: Int = 1080
 ) {
     val console = EngineConsole()
     val signalBus = SignalBus()
@@ -18,6 +20,14 @@ class EngineRuntime(
         private set
     var requestStop: Boolean = false
     var requestReload: Boolean = false
+    var touchX: Float = 0f
+        private set
+    var touchY: Float = 0f
+        private set
+    var touchPressed: Boolean = false
+        private set
+    var touchCount: Int = 0
+        private set
     private val scripts = mutableListOf<LuaScriptInstance>()
     private var accumulator = 0f
 
@@ -39,6 +49,7 @@ class EngineRuntime(
                 else scripts += LuaScriptInstance(node, "$path#generated.lua", source, this).also { it.load() }
             }
         }
+        scripts.forEach { it.call("created") }
         scripts.forEach { it.call("ready") }
         console.log(LogLevel.ENGINE, "Play Mode started with ${scene.root.walk().count()} objects")
     }
@@ -55,10 +66,15 @@ class EngineRuntime(
     }
 
     fun touch(x: Float, y: Float, down: Boolean) {
+        touchX = x
+        touchY = y
+        touchPressed = down
+        touchCount = if (down) 1 else 0
         val event = LuaTable().apply {
             set("x", x.toDouble())
             set("y", y.toDouble())
             set("pressed", LuaValue.valueOf(down))
+            set("count", touchCount)
         }
         scripts.forEach { it.call("onTouch", event) }
     }
@@ -71,6 +87,8 @@ class EngineRuntime(
     fun stop() {
         signalBus.clear()
         scripts.clear()
+        touchPressed = false
+        touchCount = 0
         console.log(LogLevel.ENGINE, "Play Mode stopped")
     }
 }
