@@ -7,9 +7,12 @@ import org.luaj.vm2.LuaTable
 import org.luaj.vm2.LuaValue
 import org.luaj.vm2.Varargs
 import org.luaj.vm2.lib.OneArgFunction
+import org.luaj.vm2.lib.TwoArgFunction
+import org.luaj.vm2.lib.ThreeArgFunction
 import org.luaj.vm2.lib.VarArgFunction
 import org.luaj.vm2.lib.ZeroArgFunction
 import org.luaj.vm2.lib.jse.JsePlatform
+import kotlin.math.round
 
 class LuaScriptInstance(
     private val owner: SceneNode,
@@ -19,17 +22,31 @@ class LuaScriptInstance(
 ) {
     private val globals: Globals = JsePlatform.standardGlobals()
     private val proxies = linkedMapOf<String, LuaTable>()
+    private val touchTable = LuaTable()
+    private val screenTable = LuaTable()
     private var loaded = false
 
     init {
         globals.set("NovaForge", createApi())
         globals.set("self", proxyFor(owner))
+        globals.set("touch", touchTable)
+        globals.set("screen", screenTable)
+        globals.set("clamp", object : ThreeArgFunction() {
+            override fun call(value: LuaValue, min: LuaValue, max: LuaValue): LuaValue {
+                val v = value.checkdouble(); val lo = min.checkdouble(); val hi = max.checkdouble()
+                return LuaValue.valueOf(v.coerceIn(lo, hi))
+            }
+        })
+        globals.set("round", object : OneArgFunction() {
+            override fun call(value: LuaValue): LuaValue = LuaValue.valueOf(round(value.checkdouble()))
+        })
         globals.set("print", object : VarArgFunction() {
             override fun invoke(args: Varargs): Varargs {
                 runtime.console.log(LogLevel.LUA, (1..args.narg()).joinToString("\t") { args.arg(it).tojstring() }, scriptPath)
                 return LuaValue.NONE
             }
         })
+        syncEnvironment()
     }
 
     fun load() {
@@ -45,6 +62,7 @@ class LuaScriptInstance(
         if (!loaded || !owner.enabled) return
         val fn = globals.get(name)
         if (!fn.isfunction()) return
+        syncEnvironment()
         syncAllToLua()
         try {
             when (args.size) {
@@ -57,6 +75,15 @@ class LuaScriptInstance(
         } catch (e: LuaError) {
             report(e)
         }
+    }
+
+    private fun syncEnvironment() {
+        touchTable.set("x", runtime.touchX.toDouble())
+        touchTable.set("y", runtime.touchY.toDouble())
+        touchTable.set("pressed", LuaValue.valueOf(runtime.touchPressed))
+        touchTable.set("count", runtime.touchCount)
+        screenTable.set("width", runtime.baseWidth)
+        screenTable.set("height", runtime.baseHeight)
     }
 
     private fun createApi(): LuaTable = LuaTable().apply {
@@ -93,6 +120,7 @@ class LuaScriptInstance(
                 val name = args.arg(1).checkjstring()
                 val callback = args.arg(2).checkfunction()
                 runtime.signalBus.on(name) { value ->
+                    syncEnvironment()
                     syncAllToLua()
                     try {
                         callback.call(kotlinToLua(value))
@@ -105,16 +133,19 @@ class LuaScriptInstance(
             }
         })
         set("reloadScene", object : ZeroArgFunction() {
-            override fun call(): LuaValue {
-                runtime.requestReload = true
-                return LuaValue.NIL
-            }
+            override fun call(): LuaValue { runtime.requestReload = true; return LuaValue.NIL }
         })
         set("quit", object : ZeroArgFunction() {
-            override fun call(): LuaValue {
-                runtime.requestStop = true
-                return LuaValue.NIL
-            }
+            override fun call(): LuaValue { runtime.requestStop = true; return LuaValue.NIL }
+        })
+        set("isTouching", object : ZeroArgFunction() {
+            override fun call(): LuaValue = LuaValue.valueOf(runtime.touchPressed)
+        })
+        set("touchX", object : ZeroArgFunction() {
+            override fun call(): LuaValue = LuaValue.valueOf(runtime.touchX.toDouble())
+        })
+        set("touchY", object : ZeroArgFunction() {
+            override fun call(): LuaValue = LuaValue.valueOf(runtime.touchY.toDouble())
         })
     }
 
