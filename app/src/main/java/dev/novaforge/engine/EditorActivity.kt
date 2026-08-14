@@ -1,12 +1,12 @@
 package dev.novaforge.engine
 
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Choreographer
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
@@ -21,11 +21,11 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import dev.novaforge.engine.core.blocks.BlockGraph
+import dev.novaforge.engine.core.blocks.BlockNode
 import dev.novaforge.engine.core.model.SceneCodec
 import dev.novaforge.engine.core.model.SceneDocument
 import dev.novaforge.engine.core.model.SceneNode
 import dev.novaforge.engine.core.model.Transform2D
-import dev.novaforge.engine.core.runtime.EngineRuntime
 import dev.novaforge.engine.core.storage.ProjectStorage
 import dev.novaforge.engine.editor.EditorCommand
 import dev.novaforge.engine.editor.NovaBlocksEditorDialog
@@ -33,7 +33,7 @@ import dev.novaforge.engine.editor.NovaViewportView
 import dev.novaforge.engine.editor.UndoManager
 import java.util.UUID
 
-class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
+class EditorActivity : AppCompatActivity() {
     private lateinit var storage: ProjectStorage
     private lateinit var project: DocumentFile
     private lateinit var scene: SceneDocument
@@ -41,31 +41,30 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
     private lateinit var consoleView: TextView
     private val undo = UndoManager()
     private val handler = Handler(Looper.getMainLooper())
-    private var runtime: EngineRuntime? = null
-    private var lastFrameNanos = 0L
     private var dirty = false
     private var pendingSpriteNode: SceneNode? = null
+    private lateinit var projectName: String
 
     private val spritePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val node = pendingSpriteNode
         pendingSpriteNode = null
         if (uri == null || node == null) return@registerForActivityResult
-        runCatching {
-            storage.importAsset(project, uri, "Sprites")
-        }.onSuccess { path ->
-            node.assetPath = path
-            node.type = "Sprite"
-            node.text = null
-            dirty = true
-            viewport.clearImageCache()
-            viewport.selectNode(node)
-            toast("Imagem importada para ${node.name}")
-        }.onFailure { toast("Falha ao importar imagem: ${it.message}") }
+        runCatching { storage.importAsset(project, uri, "Sprites") }
+            .onSuccess { path ->
+                node.assetPath = path
+                node.type = "Sprite"
+                node.text = null
+                dirty = true
+                viewport.clearImageCache()
+                viewport.selectNode(node)
+                toast("Imagem importada para ${node.name}")
+            }
+            .onFailure { toast("Falha ao importar imagem: ${it.message}") }
     }
 
     private val autosave = object : Runnable {
         override fun run() {
-            if (dirty && runtime == null) saveScene(silent = true)
+            if (dirty) saveScene(silent = true)
             handler.postDelayed(this, 30_000)
         }
     }
@@ -73,7 +72,7 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         storage = ProjectStorage(this)
-        val projectName = intent.getStringExtra(EXTRA_PROJECT_NAME) ?: return finish()
+        projectName = intent.getStringExtra(EXTRA_PROJECT_NAME) ?: return finish()
         runCatching {
             project = storage.projectByName(projectName)
             scene = storage.loadMainScene(project)
@@ -88,16 +87,11 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
 
     override fun onDestroy() {
         handler.removeCallbacks(autosave)
-        stopPlayMode()
         super.onDestroy()
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (runtime != null) {
-            stopPlayMode()
-            return
-        }
         if (dirty) saveScene(silent = true)
         super.onBackPressed()
     }
@@ -110,9 +104,7 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
             scene = this@EditorActivity.scene
             imageLoader = { path ->
                 resolveProjectFile(path)?.let { file ->
-                    runCatching {
-                        contentResolver.openInputStream(file.uri)?.use(BitmapFactory::decodeStream)
-                    }.getOrNull()
+                    runCatching { contentResolver.openInputStream(file.uri)?.use(BitmapFactory::decodeStream) }.getOrNull()
                 }
             }
             onSelectionChanged = { selected ->
@@ -124,16 +116,10 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
                 undo.execute(object : EditorCommand {
                     override val label = "Move ${node.name}"
                     override fun apply() {
-                        node.transform.x = toX
-                        node.transform.y = toY
-                        viewport.invalidate()
-                        dirty = true
+                        node.transform.x = toX; node.transform.y = toY; viewport.invalidate(); dirty = true
                     }
                     override fun revert() {
-                        node.transform.x = fromX
-                        node.transform.y = fromY
-                        viewport.invalidate()
-                        dirty = true
+                        node.transform.x = fromX; node.transform.y = fromY; viewport.invalidate(); dirty = true
                     }
                 })
             }
@@ -145,7 +131,7 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
             typeface = Typeface.MONOSPACE
             textSize = 11f
             setPadding(dp(8), dp(6), dp(8), dp(6))
-            text = "Console pronto."
+            text = "Console pronto. O Play agora abre em uma tela separada."
         }
         addView(ScrollView(context).apply { addView(consoleView) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(110)))
     }
@@ -166,20 +152,15 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
             addView(toolButton("Redo") { if (undo.redo()) { dirty = true; viewport.invalidate() } })
             addView(toolButton("Save") { saveScene() })
             addView(toolButton("▶ Play") { startPlayMode() })
-            addView(toolButton("■ Stop") { stopPlayMode() })
             addView(TextView(context).apply { text = projectName; setTextColor(Color.WHITE); setPadding(dp(12), 0, dp(12), 0) })
         })
     }
 
     private fun showSceneTree() {
         val nodes = scene.root.walk().toList()
-        val labels = nodes.map { node ->
-            val depth = depthOf(scene.root, node.id)
-            "  ".repeat(depth.coerceAtLeast(0)) + "${node.name}  [${node.type}]"
-        }
+        val labels = nodes.map { node -> "  ".repeat(depthOf(scene.root, node.id).coerceAtLeast(0)) + "${node.name}  [${node.type}]" }
         AlertDialog.Builder(this).setTitle("Scene Tree").setItems(labels.toTypedArray()) { _, index ->
-            viewport.selectNode(nodes[index])
-            showNodeActions(nodes[index])
+            viewport.selectNode(nodes[index]); showNodeActions(nodes[index])
         }.setNegativeButton("Fechar", null).show()
     }
 
@@ -205,26 +186,15 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
         AlertDialog.Builder(this).setTitle("Adicionar objeto").setItems(labels) { _, which ->
             val type = types[which]
             val node = SceneNode(
-                id = UUID.randomUUID().toString(),
-                name = uniqueNodeName(type),
-                type = type,
-                transform = Transform2D(480f, 270f),
-                width = if (type == "Camera2D") 1f else if (type == "Sprite") 180f else 180f,
+                id = UUID.randomUUID().toString(), name = uniqueNodeName(type), type = type,
+                transform = Transform2D(480f, 270f), width = if (type == "Camera2D") 1f else 180f,
                 height = if (type == "Camera2D") 1f else if (type == "Sprite") 180f else 90f,
                 text = if (type in listOf("Text", "Button", "TouchButton")) type else null
             )
             undo.execute(object : EditorCommand {
                 override val label = "Add ${node.name}"
-                override fun apply() {
-                    if (node !in scene.root.children) scene.root.children += node
-                    viewport.selectNode(node)
-                    dirty = true
-                }
-                override fun revert() {
-                    scene.root.children.remove(node)
-                    viewport.selectNode(null)
-                    dirty = true
-                }
+                override fun apply() { if (node !in scene.root.children) scene.root.children += node; viewport.selectNode(node); dirty = true }
+                override fun revert() { scene.root.children.remove(node); viewport.selectNode(null); dirty = true }
             })
             viewport.invalidate()
             if (type == "Sprite") importSpriteFor(node)
@@ -274,7 +244,9 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
             setTextColor(Color.WHITE); setBackgroundColor(Color.rgb(15, 17, 23)); minLines = 18
             setPadding(dp(12), dp(12), dp(12), dp(12)); setHorizontallyScrolling(true)
         }
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(symbolBar(editor)); addView(editor, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(430))) }
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; addView(symbolBar(editor)); addView(editor, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(430)))
+        }
         AlertDialog.Builder(this).setTitle(path).setView(layout).setPositiveButton("Save") { _, _ ->
             runCatching { storage.writeText(project, path, editor.text.toString()); node.scriptPath = path; dirty = true }
                 .onSuccess { toast("Lua salvo") }.onFailure { toast(it.message ?: "Erro ao salvar") }
@@ -285,7 +257,8 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
         if (node == null) { toast("Selecione um objeto primeiro"); return }
         val path = node.blocksPath ?: "Blocks/${safeFileName(node.name)}.blocks"
         val graph = runCatching { BlockGraph.fromJson(storage.readText(project, path)) }.getOrElse { BlockGraph() }
-        NovaBlocksEditorDialog(this, node.name, graph) { edited ->
+        val knownSignals = collectProjectSignals(graph)
+        NovaBlocksEditorDialog(this, node.name, graph, knownSignals) { edited ->
             runCatching {
                 storage.writeText(project, path, edited.toJson())
                 node.blocksPath = path
@@ -294,41 +267,34 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
         }.show()
     }
 
-    private fun startPlayMode() {
-        if (runtime != null) return
-        saveScene(silent = true)
-        val playScene = SceneCodec.deepCopy(scene)
-        runtime = EngineRuntime(
-            scene = playScene,
-            scriptLoader = { path -> runCatching { storage.readText(project, path) }.getOrNull() },
-            blocksLoader = { path -> runCatching { storage.readText(project, path) }.getOrNull() }
-        ).also { engine ->
-            engine.console.addListener { entry -> runOnUiThread { appendConsole(entry.display()) } }
-            engine.start()
+    private fun collectProjectSignals(current: BlockGraph): MutableSet<String> {
+        val result = linkedSetOf<String>()
+        fun collectNode(node: BlockNode) {
+            if (node.type == "send_signal" || node.type == "send_signal_value") {
+                node.fields["name"]?.trim()?.takeIf { it.isNotEmpty() }?.let(result::add)
+            }
+            node.children.forEach(::collectNode)
+            node.elseChildren.forEach(::collectNode)
         }
-        viewport.runtime = runtime
-        lastFrameNanos = 0L
-        Choreographer.getInstance().postFrameCallback(this)
-        viewport.invalidate()
+        fun collectGraph(graph: BlockGraph) {
+            graph.scripts.forEach { script ->
+                if (script.event == "signal") script.argument?.trim()?.takeIf { it.isNotEmpty() }?.let(result::add)
+                script.body.forEach(::collectNode)
+            }
+        }
+        collectGraph(current)
+        scene.root.walk().mapNotNull { it.blocksPath }.distinct().forEach { blocksPath ->
+            runCatching { BlockGraph.fromJson(storage.readText(project, blocksPath)) }.getOrNull()?.let(::collectGraph)
+        }
+        return result
     }
 
-    private fun stopPlayMode() {
-        Choreographer.getInstance().removeFrameCallback(this)
-        runtime?.stop(); runtime = null; viewport.runtime = null; lastFrameNanos = 0L
-        if (::viewport.isInitialized) viewport.invalidate()
-    }
-
-    override fun doFrame(frameTimeNanos: Long) {
-        val engine = runtime ?: return
-        if (lastFrameNanos != 0L) engine.frame((frameTimeNanos - lastFrameNanos) / 1_000_000_000f)
-        lastFrameNanos = frameTimeNanos; viewport.frame()
-        if (engine.requestStop) { stopPlayMode(); return }
-        if (engine.requestReload) { stopPlayMode(); startPlayMode(); return }
-        Choreographer.getInstance().postFrameCallback(this)
+    private fun startPlayMode() {
+        saveScene(silent = true)
+        startActivity(Intent(this, PlayActivity::class.java).putExtra(PlayActivity.EXTRA_PROJECT_NAME, projectName))
     }
 
     private fun saveScene(silent: Boolean = false) {
-        if (runtime != null) return
         runCatching { storage.saveMainScene(project, SceneCodec.encode(scene)); dirty = false }
             .onSuccess { if (!silent) toast("Cena salva") }
             .onFailure { toast("Erro ao salvar: ${it.message}") }
@@ -379,7 +345,10 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
         val width: Float, val height: Float, val tags: Set<String>
     )
 
-    private fun snapshot(node: SceneNode) = NodeSnapshot(node.name, node.transform.x, node.transform.y, node.transform.rotation, node.transform.scaleX, node.transform.scaleY, node.width, node.height, node.tags.toSet())
+    private fun snapshot(node: SceneNode) = NodeSnapshot(
+        node.name, node.transform.x, node.transform.y, node.transform.rotation, node.transform.scaleX, node.transform.scaleY,
+        node.width, node.height, node.tags.toSet()
+    )
 
     private fun applySnapshot(node: SceneNode, value: NodeSnapshot) {
         node.name = value.name; node.transform.x = value.x; node.transform.y = value.y; node.transform.rotation = value.rotation
@@ -407,7 +376,6 @@ class EditorActivity : AppCompatActivity(), Choreographer.FrameCallback {
 
     private fun toolButton(label: String, action: () -> Unit) = Button(this).apply { text = label; isAllCaps = false; setOnClickListener { action() } }
     private fun safeFileName(name: String) = name.replace(Regex("[^A-Za-z0-9_-]"), "_")
-    private fun appendConsole(line: String) { consoleView.append("\n$line") }
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
