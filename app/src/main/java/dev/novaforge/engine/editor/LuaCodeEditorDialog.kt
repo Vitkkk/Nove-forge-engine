@@ -19,7 +19,6 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -60,15 +59,15 @@ class LuaCodeEditorDialog(
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(8), dp(6), dp(8), dp(6))
             setBackgroundColor(Color.rgb(19, 24, 34))
-            addView(button("←") { dialog.dismiss() }, dp(52))
+            addView(button("←", dp(52)) { dialog.dismiss() })
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(8), 0, dp(8), 0)
                 addView(TextView(context).apply { text = path.substringAfterLast('/'); textSize = 17f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD })
                 addView(TextView(context).apply { text = path; textSize = 11f; setTextColor(Color.rgb(137, 151, 173)) })
             }, LinearLayout.LayoutParams(0, dp(54), 1f))
-            addView(button("⌕") { searchRow.visibility = if (searchRow.visibility == View.VISIBLE) View.GONE else View.VISIBLE }, dp(52))
-            addView(button("✓") { validateAndSave() }, dp(52))
+            addView(button("⌕", dp(52)) { searchRow.visibility = if (searchRow.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
+            addView(button("✓", dp(52)) { validateAndSave() })
         })
 
         searchRow = LinearLayout(context).apply {
@@ -80,13 +79,13 @@ class LuaCodeEditorDialog(
                 orientation = LinearLayout.HORIZONTAL
                 search = EditText(context).apply { hint = "Buscar"; setSingleLine(); setTextColor(Color.WHITE); setHintTextColor(Color.GRAY) }
                 addView(search, LinearLayout.LayoutParams(0, dp(48), 1f))
-                addView(button("Próx.") { findNext() }, dp(74))
+                addView(button("Próx.", dp(74)) { findNext() })
             })
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 replace = EditText(context).apply { hint = "Substituir por"; setSingleLine(); setTextColor(Color.WHITE); setHintTextColor(Color.GRAY) }
                 addView(replace, LinearLayout.LayoutParams(0, dp(48), 1f))
-                addView(button("Tudo") { replaceAll() }, dp(74))
+                addView(button("Tudo", dp(74)) { replaceAll() })
             })
         }
         addView(searchRow)
@@ -115,7 +114,7 @@ class LuaCodeEditorDialog(
                 "NovaForge API" to { showSnippets(API_SNIPPETS) },
                 "Node" to { showSnippets(NODE_SNIPPETS) },
                 "Controle" to { showSnippets(CONTROL_SNIPPETS) }
-            ).forEach { (label, action) -> addView(button(label, action, null)) }
+            ).forEach { (label, action) -> addView(button(label) { action() }) }
         })
     }
 
@@ -125,7 +124,7 @@ class LuaCodeEditorDialog(
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             listOf("(", ")", "[", "]", "{", "}", "=", "+", "-", "*", "/", ".", ",", "\"", "'", ":", "_", "<", ">", "~").forEach { symbol ->
-                addView(button(symbol, { insert(symbol) }, dp(46)))
+                addView(button(symbol, dp(46)) { insert(symbol) })
             }
         })
     }
@@ -185,7 +184,7 @@ class LuaCodeEditorDialog(
         editor.setSelection((start + value.length).coerceAtMost(editable.length))
     }
 
-    private fun button(label: String, action: () -> Unit, width: Int? = null) = Button(context).apply {
+    private fun button(label: String, width: Int? = null, action: () -> Unit) = Button(context).apply {
         text = label; isAllCaps = false; textSize = 13f; setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT)
         minWidth = width ?: dp(82); minimumHeight = dp(44); setOnClickListener { action() }
     }
