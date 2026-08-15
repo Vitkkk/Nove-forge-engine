@@ -34,7 +34,9 @@ class NovaBlocksEditorDialog(
     private val dialog = Dialog(context)
     private lateinit var workspace: LinearLayout
     private lateinit var title: TextView
-    private var activeScript: BlockScript = graph.scripts.firstOrNull() ?: BlockScript("ready").also { graph.scripts += it }
+    private var activeScript: BlockScript = graph.scripts.firstOrNull { it.body.isNotEmpty() }
+        ?: graph.scripts.firstOrNull()
+        ?: BlockScript("ready").also { graph.scripts += it }
 
     init { seedSignalsFromGraph() }
 
@@ -70,7 +72,7 @@ class NovaBlocksEditorDialog(
             addView(iconButton("✓") { onSave(graph); dialog.dismiss() })
         })
         addView(TextView(context).apply {
-            text = "Toque em + para adicionar blocos • toque para editar • segure para excluir"
+            text = "Evento atual: ${eventLabel(activeScript)} • toque em Eventos para trocar"
             textSize = 12f
             setTextColor(Color.rgb(190, 220, 226))
             setPadding(dp(14), dp(7), dp(14), dp(7))
@@ -80,6 +82,17 @@ class NovaBlocksEditorDialog(
             setPadding(dp(10), dp(8), dp(10), dp(90))
         }
         addView(ScrollView(context).apply { addView(workspace) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+    }
+
+    private fun eventLabel(script: BlockScript): String = when (script.event) {
+        "ready" -> "Quando a cena começar"
+        "created" -> "Quando este objeto for criado"
+        "update" -> "A cada frame"
+        "fixed_update" -> "A cada physics frame"
+        "touch" -> "Quando tocar neste objeto"
+        "signal" -> "Quando receber sinal [${script.argument ?: "signal"}]"
+        "pressed" -> "Quando botão for pressionado"
+        else -> script.event
     }
 
     private fun chooseEvent() {
@@ -233,6 +246,7 @@ class NovaBlocksEditorDialog(
 
     private fun refreshWorkspace() {
         workspace.removeAllViews()
+        title.text = "$objectName • ${eventLabel(activeScript)}"
         val eventDef = when (activeScript.event) {
             "created" -> BlockRegistry.byId("event_created")
             "update" -> BlockRegistry.byId("event_update")
@@ -255,7 +269,7 @@ class NovaBlocksEditorDialog(
         }
         if (activeScript.body.isEmpty()) {
             workspace.addView(TextView(context).apply {
-                text = "\nToque em + e escolha uma categoria.\nOs blocos aparecerão empilhados aqui."
+                text = "\nEste evento não tem blocos.\nToque em Eventos para ver outros eventos ou em + para adicionar."
                 textSize = 17f
                 gravity = Gravity.CENTER
                 setTextColor(Color.rgb(190, 207, 213))
