@@ -1,10 +1,12 @@
 package dev.novaforge.engine.editor
 
 import android.app.Dialog
+import android.content.ClipData
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.view.DragEvent
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -37,19 +39,19 @@ class NovaBlocksEditorDialog(
     private var activeScript: BlockScript = graph.scripts.firstOrNull { it.body.isNotEmpty() }
         ?: graph.scripts.firstOrNull()
         ?: BlockScript("ready").also { graph.scripts += it }
+    private var insertionTarget: MutableList<BlockNode> = activeScript.body
+
+    private data class DragBlock(val source: MutableList<BlockNode>, val node: BlockNode)
 
     init { seedSignalsFromGraph() }
 
     fun show() {
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
         dialog.setContentView(buildRoot())
-        dialog.window?.apply {
-            setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
-            setBackgroundDrawableResource(android.R.color.transparent)
-        }
-        refreshWorkspace()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
         dialog.show()
         dialog.window?.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+        refreshWorkspace()
     }
 
     private fun buildRoot(): View = LinearLayout(context).apply {
@@ -68,18 +70,18 @@ class NovaBlocksEditorDialog(
             }
             addView(title, LinearLayout.LayoutParams(0, dp(52), 1f))
             addView(iconButton("Eventos") { chooseEvent() })
-            addView(iconButton("＋") { showCategories() })
+            addView(iconButton("＋") { insertionTarget = activeScript.body; showCategories() })
             addView(iconButton("✓") { onSave(graph); dialog.dismiss() })
         })
         addView(TextView(context).apply {
-            text = "Evento atual: ${eventLabel(activeScript)} • toque em Eventos para trocar"
+            text = "Scripts separados por evento • segure um bloco e arraste para mudar a ordem"
             textSize = 12f
             setTextColor(Color.rgb(190, 220, 226))
             setPadding(dp(14), dp(7), dp(14), dp(7))
         })
         workspace = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(8), dp(10), dp(90))
+            setPadding(dp(10), dp(8), dp(10), dp(110))
         }
         addView(ScrollView(context).apply { addView(workspace) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
     }
@@ -106,7 +108,7 @@ class NovaBlocksEditorDialog(
             "Quando botão for pressionado"
         )
         val ids = arrayOf("ready", "created", "update", "fixed_update", "touch", "signal", "pressed")
-        AlertDialog.Builder(context).setTitle("Evento").setItems(options) { _, index ->
+        AlertDialog.Builder(context).setTitle("Adicionar/selecionar evento").setItems(options) { _, index ->
             if (ids[index] == "signal") chooseSignal("Quando receber sinal") { selectOrCreateScript("signal", it) }
             else selectOrCreateScript(ids[index], null)
         }.show()
@@ -115,6 +117,7 @@ class NovaBlocksEditorDialog(
     private fun selectOrCreateScript(event: String, argument: String?) {
         activeScript = graph.scripts.firstOrNull { it.event == event && it.argument == argument }
             ?: BlockScript(event, argument).also { graph.scripts += it }
+        insertionTarget = activeScript.body
         argument?.let(knownSignals::add)
         refreshWorkspace()
     }
@@ -135,8 +138,7 @@ class NovaBlocksEditorDialog(
                 val value = input.text.toString().trim().ifBlank { "signal_${knownSignals.size + 1}" }
                 knownSignals += value
                 onCreated(value)
-            }
-            .setNegativeButton("Cancelar", null).show()
+            }.setNegativeButton("Cancelar", null).show()
     }
 
     private fun seedSignalsFromGraph() {
@@ -204,7 +206,7 @@ class NovaBlocksEditorDialog(
                 setPadding(dp(12), dp(12), dp(12), dp(18))
             })
         }
-        BlockRegistry.inCategory(category).forEach { def -> root.addView(blockCard(def, preview = true) { addDefinition(def) }) }
+        BlockRegistry.inCategory(category).forEach { def -> root.addView(blockCard(def, true) { addDefinition(def) }) }
         Dialog(context).apply {
             requestWindowFeature(Window.FEATURE_NO_TITLE)
             setContentView(ScrollView(context).apply { addView(root) })
@@ -234,80 +236,268 @@ class NovaBlocksEditorDialog(
             chooseSignal("Enviar qual sinal?") { signal ->
                 val fields = LinkedHashMap(def.defaults)
                 fields["name"] = signal
-                activeScript.body += BlockNode(def.id, fields)
+                insertionTarget += BlockNode(def.id, fields)
                 knownSignals += signal
                 refreshWorkspace()
             }
             return
         }
-        activeScript.body += BlockNode(def.id, LinkedHashMap(def.defaults))
+        insertionTarget += BlockNode(def.id, LinkedHashMap(def.defaults))
         refreshWorkspace()
     }
 
     private fun refreshWorkspace() {
         workspace.removeAllViews()
         title.text = "$objectName • ${eventLabel(activeScript)}"
-        val eventDef = when (activeScript.event) {
-            "created" -> BlockRegistry.byId("event_created")
-            "update" -> BlockRegistry.byId("event_update")
-            "fixed_update" -> BlockRegistry.byId("event_fixed")
-            "touch" -> BlockRegistry.byId("event_touch")
-            "signal" -> BlockRegistry.byId("event_signal")
-            "pressed" -> BlockRegistry.byId("event_pressed")
-            else -> BlockRegistry.byId("event_ready")
-        }
-        eventDef?.let { def ->
-            val label = if (activeScript.event == "signal") "Quando receber sinal [${activeScript.argument}]" else def.label
-            val eventView = blockCard(def.copy(label = label), preview = false) {
-                if (activeScript.event == "signal") chooseSignal("Quando receber sinal") { selectOrCreateScript("signal", it) }
+
+        graph.scripts.forEach { script ->
+            val group = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, 0, 0, dp(26))
             }
-            workspace.addView(eventView)
+            group.addView(eventHeader(script))
+            if (script.body.isEmpty()) {
+                group.addView(TextView(context).apply {
+                    text = "  sem blocos — toque aqui para selecionar este script"
+                    textSize = 13f
+                    setTextColor(Color.rgb(160, 190, 198))
+                    setPadding(dp(18), dp(10), dp(12), dp(14))
+                    setOnClickListener { activeScript = script; insertionTarget = script.body; refreshWorkspace() }
+                })
+            } else {
+                renderList(group, script.body, 0)
+            }
+            workspace.addView(group)
         }
-        activeScript.body.forEachIndexed { index, node ->
-            val def = BlockRegistry.byId(node.type) ?: BlockDefinition(node.type, "Debug", node.type)
-            workspace.addView(blockView(def, node, index))
+    }
+
+    private fun eventHeader(script: BlockScript): View {
+        val def = eventDefinition(script)
+        val label = eventLabel(script)
+        return blockCard(def.copy(label = label), false) {
+            activeScript = script
+            insertionTarget = script.body
+            if (script.event == "signal") chooseSignal("Quando receber sinal") { selected ->
+                val replacement = graph.scripts.firstOrNull { it.event == "signal" && it.argument == selected }
+                if (replacement != null && replacement !== script) activeScript = replacement
+                else {
+                    val idx = graph.scripts.indexOf(script)
+                    val changed = BlockScript("signal", selected, script.body)
+                    graph.scripts[idx] = changed
+                    activeScript = changed
+                }
+                insertionTarget = activeScript.body
+                refreshWorkspace()
+            } else refreshWorkspace()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(2), dp(10), dp(2), 0)
+            }
+            if (script === activeScript) alpha = 1f else alpha = .88f
         }
-        if (activeScript.body.isEmpty()) {
-            workspace.addView(TextView(context).apply {
-                text = "\nEste evento não tem blocos.\nToque em Eventos para ver outros eventos ou em + para adicionar."
-                textSize = 17f
-                gravity = Gravity.CENTER
-                setTextColor(Color.rgb(190, 207, 213))
-                setPadding(dp(20), dp(45), dp(20), dp(45))
+    }
+
+    private fun eventDefinition(script: BlockScript): BlockDefinition = when (script.event) {
+        "created" -> BlockRegistry.byId("event_created")
+        "update" -> BlockRegistry.byId("event_update")
+        "fixed_update" -> BlockRegistry.byId("event_fixed")
+        "touch" -> BlockRegistry.byId("event_touch")
+        "signal" -> BlockRegistry.byId("event_signal")
+        "pressed" -> BlockRegistry.byId("event_pressed")
+        else -> BlockRegistry.byId("event_ready")
+    } ?: BlockDefinition("event", "Events", eventLabel(script), color = 0xFFD85A16)
+
+    private fun renderList(parent: LinearLayout, list: MutableList<BlockNode>, depth: Int) {
+        list.toList().forEach { node -> parent.addView(nodeView(list, node, depth)) }
+    }
+
+    private fun nodeView(list: MutableList<BlockNode>, node: BlockNode, depth: Int): View {
+        val def = BlockRegistry.byId(node.type) ?: BlockDefinition(node.type, "Debug", node.type)
+        val isContainer = node.type in setOf("if", "if_else", "repeat", "while")
+        if (!isContainer) {
+            return blockCard(def.copy(label = formatNodeLabel(def, node)), false) {
+                activeScript = findOwningScript(node) ?: activeScript
+                insertionTarget = list
+                editNode(def, node, list)
+            }.apply {
+                val margin = dp(depth * 14)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(margin + dp(2), 0, dp(2), dp(1))
+                }
+                attachDrag(this, list, node)
+            }
+        }
+
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            val margin = dp(depth * 14)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(margin + dp(2), 0, dp(2), dp(2))
+            }
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(32, 65, 72))
+                cornerRadius = dp(8).toFloat()
+                setStroke(dp(2), def.color.toInt())
+            }
+            val header = blockCard(def.copy(label = formatNodeLabel(def, node)), false) {
+                activeScript = findOwningScript(node) ?: activeScript
+                insertionTarget = list
+                editNode(def, node, list)
+            }
+            attachDrag(header, list, node)
+            addView(header)
+
+            val inside = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(22), dp(5), dp(6), dp(5))
+            }
+            if (node.children.isEmpty()) inside.addView(dropZone("Solte ou adicione blocos aqui", node.children))
+            else renderList(inside, node.children, depth + 1)
+            inside.addView(smallAdd("＋ adicionar dentro") {
+                activeScript = findOwningScript(node) ?: activeScript
+                insertionTarget = node.children
+                showCategories()
+            })
+            addView(inside)
+
+            if (node.type == "if_else") {
+                addView(TextView(context).apply {
+                    text = "Senão"
+                    typeface = Typeface.DEFAULT_BOLD
+                    textSize = 17f
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(def.color.toInt())
+                    setPadding(dp(20), dp(9), dp(10), dp(9))
+                })
+                val otherwise = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(22), dp(5), dp(6), dp(5))
+                }
+                if (node.elseChildren.isEmpty()) otherwise.addView(dropZone("Solte blocos do Senão aqui", node.elseChildren))
+                else renderList(otherwise, node.elseChildren, depth + 1)
+                otherwise.addView(smallAdd("＋ adicionar no Senão") {
+                    insertionTarget = node.elseChildren
+                    showCategories()
+                })
+                addView(otherwise)
+            }
+
+            addView(TextView(context).apply {
+                text = if (node.type == "repeat" || node.type == "while") "Fim do loop" else "Fim da condição"
+                typeface = Typeface.DEFAULT_BOLD
+                textSize = 16f
+                setTextColor(Color.WHITE)
+                setBackgroundColor(def.color.toInt())
+                setPadding(dp(20), dp(10), dp(10), dp(10))
             })
         }
     }
 
-    private fun blockView(def: BlockDefinition, node: BlockNode, index: Int): View {
-        val label = formatNodeLabel(def, node)
-        return blockCard(def.copy(label = label), preview = false) { editNode(def, node, index) }.apply {
-            setOnLongClickListener {
-                AlertDialog.Builder(context).setTitle("Remover bloco?").setMessage(label)
-                    .setPositiveButton("Remover") { _, _ -> activeScript.body.removeAt(index); refreshWorkspace() }
-                    .setNegativeButton("Cancelar", null).show()
-                true
+    private fun dropZone(label: String, target: MutableList<BlockNode>): View = TextView(context).apply {
+        text = label
+        textSize = 13f
+        gravity = Gravity.CENTER
+        setTextColor(Color.rgb(180, 210, 215))
+        setPadding(dp(8), dp(14), dp(8), dp(14))
+        background = GradientDrawable().apply {
+            setColor(Color.rgb(15, 52, 62)); cornerRadius = dp(6).toFloat(); setStroke(dp(1), Color.rgb(80, 125, 135))
+        }
+        setOnDragListener { _, event ->
+            when (event.action) {
+                DragEvent.ACTION_DRAG_ENTERED -> { alpha = .55f; true }
+                DragEvent.ACTION_DRAG_EXITED -> { alpha = 1f; true }
+                DragEvent.ACTION_DROP -> {
+                    alpha = 1f
+                    val drag = event.localState as? DragBlock ?: return@setOnDragListener false
+                    drag.source.remove(drag.node)
+                    target.add(drag.node)
+                    refreshWorkspace()
+                    true
+                }
+                DragEvent.ACTION_DRAG_ENDED -> { alpha = 1f; true }
+                else -> true
             }
         }
     }
 
-    private fun editNode(def: BlockDefinition, node: BlockNode, index: Int) {
-        if (node.fields.isEmpty()) {
-            AlertDialog.Builder(context).setTitle(def.label).setItems(arrayOf("Duplicar", "Excluir")) { _, which ->
-                if (which == 0) activeScript.body.add(index + 1, BlockNode(node.type, LinkedHashMap(node.fields))) else activeScript.body.removeAt(index)
-                refreshWorkspace()
-            }.show()
-            return
+    private fun smallAdd(label: String, action: () -> Unit): View = TextView(context).apply {
+        text = label
+        textSize = 13f
+        setTextColor(Color.rgb(210, 230, 234))
+        setPadding(dp(12), dp(9), dp(12), dp(9))
+        setOnClickListener { action() }
+    }
+
+    private fun attachDrag(view: View, list: MutableList<BlockNode>, node: BlockNode) {
+        view.setOnLongClickListener { v ->
+            val clip = ClipData.newPlainText("NovaBlock", node.type)
+            v.startDragAndDrop(clip, View.DragShadowBuilder(v), DragBlock(list, node), 0)
+            true
         }
+        view.setOnDragListener { _, event ->
+            when (event.action) {
+                DragEvent.ACTION_DRAG_ENTERED -> { view.alpha = .55f; true }
+                DragEvent.ACTION_DRAG_EXITED -> { view.alpha = 1f; true }
+                DragEvent.ACTION_DROP -> {
+                    view.alpha = 1f
+                    val drag = event.localState as? DragBlock ?: return@setOnDragListener false
+                    if (drag.node === node) return@setOnDragListener true
+                    drag.source.remove(drag.node)
+                    val targetIndex = list.indexOf(node).coerceAtLeast(0)
+                    list.add(targetIndex, drag.node)
+                    refreshWorkspace()
+                    true
+                }
+                DragEvent.ACTION_DRAG_ENDED -> { view.alpha = 1f; true }
+                else -> true
+            }
+        }
+    }
+
+    private fun findOwningScript(node: BlockNode): BlockScript? {
+        fun contains(list: List<BlockNode>): Boolean = list.any { it === node || contains(it.children) || contains(it.elseChildren) }
+        return graph.scripts.firstOrNull { contains(it.body) }
+    }
+
+    private fun editNode(def: BlockDefinition, node: BlockNode, owner: MutableList<BlockNode>) {
         val keys = node.fields.keys.toList()
-        val labels = keys.map { "$it = ${node.fields[it]}" } + listOf("Duplicar", "Excluir")
-        AlertDialog.Builder(context).setTitle(def.label).setItems(labels.toTypedArray()) { _, which ->
+        val items = mutableListOf<String>()
+        items += keys.map { "$it = ${node.fields[it]}" }
+        if (node.type in setOf("if", "if_else", "repeat", "while")) items += "Adicionar bloco dentro"
+        items += listOf("Mover para cima", "Mover para baixo", "Duplicar", "Excluir")
+        AlertDialog.Builder(context).setTitle(def.label).setItems(items.toTypedArray()) { _, which ->
             when {
                 which < keys.size -> editField(keys[which], node)
-                which == keys.size -> { activeScript.body.add(index + 1, BlockNode(node.type, LinkedHashMap(node.fields))); refreshWorkspace() }
-                else -> { activeScript.body.removeAt(index); refreshWorkspace() }
+                items[which] == "Adicionar bloco dentro" -> { insertionTarget = node.children; showCategories() }
+                items[which] == "Mover para cima" -> move(owner, node, -1)
+                items[which] == "Mover para baixo" -> move(owner, node, 1)
+                items[which] == "Duplicar" -> {
+                    val index = owner.indexOf(node)
+                    owner.add(index + 1, cloneBlock(node))
+                    refreshWorkspace()
+                }
+                items[which] == "Excluir" -> { owner.remove(node); refreshWorkspace() }
             }
         }.show()
     }
+
+    private fun move(list: MutableList<BlockNode>, node: BlockNode, delta: Int) {
+        val from = list.indexOf(node)
+        if (from < 0) return
+        val to = (from + delta).coerceIn(0, list.lastIndex)
+        if (from != to) {
+            list.removeAt(from)
+            list.add(to, node)
+        }
+        refreshWorkspace()
+    }
+
+    private fun cloneBlock(node: BlockNode): BlockNode = BlockNode(
+        node.type,
+        LinkedHashMap(node.fields),
+        node.children.map(::cloneBlock).toMutableList(),
+        node.elseChildren.map(::cloneBlock).toMutableList()
+    )
 
     private fun editField(key: String, node: BlockNode) {
         val raw = node.fields[key] ?: "0"
@@ -329,13 +519,13 @@ class NovaBlocksEditorDialog(
         typeface = Typeface.DEFAULT_BOLD
         setTextColor(Color.WHITE)
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(22), dp(18), dp(18), dp(18))
+        setPadding(dp(22), dp(17), dp(18), dp(17))
         background = GradientDrawable().apply {
             setColor(def.color.toInt()); cornerRadius = dp(8).toFloat(); setStroke(dp(2), darken(def.color.toInt()))
         }
         setOnClickListener { click() }
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(dp(2), dp(2), dp(2), dp(2))
+            setMargins(dp(2), 0, dp(2), dp(1))
         }
     }
 
