@@ -6,6 +6,7 @@ import dev.novaforge.engine.core.model.SceneDocument
 import dev.novaforge.engine.core.model.SceneNode
 import org.luaj.vm2.LuaTable
 import org.luaj.vm2.LuaValue
+import kotlin.math.abs
 
 class EngineRuntime(
     val scene: SceneDocument,
@@ -28,7 +29,9 @@ class EngineRuntime(
         private set
     var touchCount: Int = 0
         private set
-    private val scripts = mutableListOf<LuaScriptInstance>()
+
+    private data class LoadedScript(val owner: SceneNode, val instance: LuaScriptInstance)
+    private val scripts = mutableListOf<LoadedScript>()
     private var accumulator = 0f
 
     fun start() {
@@ -37,7 +40,10 @@ class EngineRuntime(
             node.scriptPath?.let { path ->
                 val source = scriptLoader(path)
                 if (source == null) console.log(LogLevel.WARNING, "Script not found", path)
-                else scripts += LuaScriptInstance(node, path, source, this).also { it.load() }
+                else {
+                    val instance = LuaScriptInstance(node, path, source, this).also { it.load() }
+                    scripts += LoadedScript(node, instance)
+                }
             }
             node.blocksPath?.let { path ->
                 val source = blocksLoader(path)?.let { text ->
@@ -46,21 +52,24 @@ class EngineRuntime(
                         .getOrNull()
                 }
                 if (source == null) console.log(LogLevel.WARNING, "NovaBlocks graph not found or invalid", path)
-                else scripts += LuaScriptInstance(node, "$path#generated.lua", source, this).also { it.load() }
+                else {
+                    val instance = LuaScriptInstance(node, "$path#generated.lua", source, this).also { it.load() }
+                    scripts += LoadedScript(node, instance)
+                }
             }
         }
-        scripts.forEach { it.call("created") }
-        scripts.forEach { it.call("ready") }
+        scripts.forEach { it.instance.call("created") }
+        scripts.forEach { it.instance.call("ready") }
         console.log(LogLevel.ENGINE, "Play Mode started with ${scene.root.walk().count()} objects")
     }
 
     fun frame(delta: Float) {
         deltaSeconds = delta.coerceIn(0f, 0.1f)
-        scripts.forEach { it.call("update", LuaValue.valueOf(deltaSeconds.toDouble())) }
+        scripts.forEach { it.instance.call("update", LuaValue.valueOf(deltaSeconds.toDouble())) }
         accumulator += deltaSeconds
         val fixed = 1f / 60f
         while (accumulator >= fixed) {
-            scripts.forEach { it.call("fixedUpdate", LuaValue.valueOf(fixed.toDouble())) }
+            scripts.forEach { it.instance.call("fixedUpdate", LuaValue.valueOf(fixed.toDouble())) }
             accumulator -= fixed
         }
     }
@@ -70,14 +79,42 @@ class EngineRuntime(
         touchY = y
         touchPressed = down
         touchCount = if (down) 1 else 0
+
         val event = LuaTable().apply {
             set("x", x.toDouble())
             set("y", y.toDouble())
             set("pressed", LuaValue.valueOf(down))
             set("count", touchCount)
         }
-        scripts.forEach { it.call("onTouch", event) }
+        scripts.forEach { it.instance.call("onTouch", event) }
+
+        if (down) {
+            val button = hitTestInteractive(x, y)
+            if (button != null) {
+                scripts.filter { it.owner.id == button.id }.forEach { loaded ->
+                    // Lua scripts may expose onPressed(); NovaBlocks 0.1.x generated
+                    // onPressed_<graphIndex>(), so call both forms for compatibility.
+                    loaded.instance.call("onPressed")
+                    repeat(64) { index -> loaded.instance.call("onPressed_$index") }
+                }
+                console.log(LogLevel.ENGINE, "Pressed ${button.name}")
+            }
+        }
     }
+
+    private fun hitTestInteractive(x: Float, y: Float): SceneNode? =
+        scene.root.walk()
+            .filter {
+                it.enabled && it.transform.visible &&
+                    (it.type == "Button" || it.type == "TouchButton")
+            }
+            .sortedByDescending { it.transform.zIndex }
+            .firstOrNull { node ->
+                val t = node.transform
+                val halfW = node.width * abs(t.scaleX) / 2f
+                val halfH = node.height * abs(t.scaleY) / 2f
+                x in (t.x - halfW)..(t.x + halfW) && y in (t.y - halfH)..(t.y + halfH)
+            }
 
     fun findNode(value: String, byId: Boolean = false): SceneNode? =
         scene.root.walk().firstOrNull { if (byId) it.id == value else it.name == value }
