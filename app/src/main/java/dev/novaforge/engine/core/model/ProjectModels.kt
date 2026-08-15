@@ -5,7 +5,7 @@ import org.json.JSONObject
 data class ProjectConfig(
     val formatVersion: Int = 1,
     val name: String,
-    val engineVersion: String = "0.1.0",
+    val engineVersion: String = "0.2.0",
     val mainScene: String = "Scenes/Main.scene",
     val width: Int = 1920,
     val height: Int = 1080,
