@@ -20,6 +20,7 @@ class NovaViewportView(context: Context) : View(context) {
     var scene: SceneDocument? = null
         set(value) { field = value; selectedNode = null; invalidate() }
     var runtime: EngineRuntime? = null
+        set(value) { field = value; invalidate() }
     var selectedNode: SceneNode? = null
         private set
     var onSelectionChanged: ((SceneNode?) -> Unit)? = null
@@ -53,6 +54,7 @@ class NovaViewportView(context: Context) : View(context) {
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(detector: ScaleGestureDetector): Boolean {
+            if (runtime != null) return false
             val beforeX = screenToWorldX(detector.focusX)
             val beforeY = screenToWorldY(detector.focusY)
             zoom = (zoom * detector.scaleFactor).coerceIn(0.15f, 8f)
@@ -67,15 +69,31 @@ class NovaViewportView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        drawGrid(canvas)
-        val activeScene = runtime?.scene ?: scene ?: return
+        val running = runtime
+        val activeScene = running?.scene ?: scene ?: return
+
+        if (running == null) drawGrid(canvas)
+
         canvas.save()
-        canvas.translate(panX, panY)
-        canvas.scale(zoom, zoom)
+        if (running != null) {
+            val camera = activeScene.root.walk().firstOrNull {
+                it.type == "Camera2D" && it.enabled && it.transform.visible
+            }
+            if (camera != null) {
+                // Camera2D position represents the CENTER of the game view.
+                // World camera.x/camera.y must therefore map to the physical center of this View.
+                canvas.translate(width / 2f - camera.transform.x, height / 2f - camera.transform.y)
+            }
+        } else {
+            canvas.translate(panX, panY)
+            canvas.scale(zoom, zoom)
+        }
+
         activeScene.root.walk()
             .filter { it.enabled && it.transform.visible && it.type != "Node" }
+            .filter { running == null || it.type != "Camera2D" }
             .sortedBy { it.transform.zIndex }
-            .forEach { drawNode(canvas, it, it === selectedNode && runtime == null) }
+            .forEach { drawNode(canvas, it, it === selectedNode && running == null) }
         canvas.restore()
     }
 
@@ -97,6 +115,9 @@ class NovaViewportView(context: Context) : View(context) {
         val rect = RectF(-node.width / 2f, -node.height / 2f, node.width / 2f, node.height / 2f)
         if (node.type == "Camera2D") {
             canvas.drawRect(RectF(-480f, -270f, 480f, 270f), cameraPaint)
+            canvas.drawCircle(0f, 0f, 7f, cameraPaint)
+            canvas.drawLine(-18f, 0f, 18f, 0f, cameraPaint)
+            canvas.drawLine(0f, -18f, 0f, 18f, cameraPaint)
             canvas.drawText("Camera2D", 12f, 32f, textPaint)
         } else {
             val bitmap = node.assetPath?.let { path ->
@@ -120,10 +141,12 @@ class NovaViewportView(context: Context) : View(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         scaleDetector.onTouchEvent(event)
         runtime?.let { running ->
-            val worldX = screenToWorldX(event.x)
-            val worldY = screenToWorldY(event.y)
+            val camera = running.scene.root.walk().firstOrNull { it.type == "Camera2D" && it.enabled && it.transform.visible }
+            val worldX = if (camera != null) event.x - width / 2f + camera.transform.x else event.x
+            val worldY = if (camera != null) event.y - height / 2f + camera.transform.y else event.y
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> running.touch(worldX, worldY, true)
+                MotionEvent.ACTION_MOVE -> running.touch(worldX, worldY, true)
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> running.touch(worldX, worldY, false)
             }
             return true
@@ -149,24 +172,13 @@ class NovaViewportView(context: Context) : View(context) {
                 }
                 invalidate()
             }
-            MotionEvent.ACTION_POINTER_DOWN -> {
-                draggingNode = false
-                panning = true
-            }
+            MotionEvent.ACTION_POINTER_DOWN -> { draggingNode = false; panning = true }
             MotionEvent.ACTION_MOVE -> {
-                if (scaleDetector.isInProgress) {
-                    lastX = event.x; lastY = event.y
-                    return true
-                }
+                if (scaleDetector.isInProgress) { lastX = event.x; lastY = event.y; return true }
                 val totalDx = event.x - downX
                 val totalDy = event.y - downY
                 if (!movedBeyondSlop && totalDx * totalDx + totalDy * totalDy >= touchSlop * touchSlop) movedBeyondSlop = true
-
-                if (event.pointerCount > 1) {
-                    panning = true
-                    draggingNode = false
-                }
-
+                if (event.pointerCount > 1) { panning = true; draggingNode = false }
                 if (panning) {
                     panX += event.x - lastX
                     panY += event.y - lastY
@@ -185,19 +197,14 @@ class NovaViewportView(context: Context) : View(context) {
                 lastX = event.x; lastY = event.y
                 invalidate()
             }
-            MotionEvent.ACTION_POINTER_UP -> {
-                lastX = event.x
-                lastY = event.y
-            }
+            MotionEvent.ACTION_POINTER_UP -> { lastX = event.x; lastY = event.y }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 selectedNode?.takeIf { draggingNode && movedBeyondSlop }?.let { node ->
                     if (node.transform.x != dragStartNodeX || node.transform.y != dragStartNodeY) {
                         onNodeDragFinished?.invoke(node, dragStartNodeX, dragStartNodeY, node.transform.x, node.transform.y)
                     }
                 }
-                draggingNode = false
-                panning = false
-                movedBeyondSlop = false
+                draggingNode = false; panning = false; movedBeyondSlop = false
                 parent?.requestDisallowInterceptTouchEvent(false)
             }
         }
